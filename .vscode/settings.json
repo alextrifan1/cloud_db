@@ -1,0 +1,21 @@
+{
+  "sqltools.connections": [
+    {
+      "name": "LocalDbMaria",
+      "driver": "MariaDB",
+      "server": "127.0.0.1",
+      "port": 3306,
+      "username": "root",
+      "askForPassword": true
+    },
+    {
+      "name": "LocalPostgres",
+      "driver": "PostgreSQL",
+      "server": "127.0.0.1",
+      "port": 5432,
+      "database": "postgres",
+      "username": "postgres",
+      "askForPassword": true
+    }
+  ]
+}
