@@ -125,8 +125,9 @@ CREATE TABLE contract_version
     CHECK (salary_eur > 0),
     CHECK (valid_from < valid_to),
     CHECK (tx_from < tx_to),
-    -- As-of index: jump to one player, then filter by tx_to, then valid_from.
-    INDEX ix_contract_asof (player_id, tx_to, valid_from)
+    -- As-of indexes: jump to one player (Q1) or one club (Q6),
+    INDEX ix_contract_asof (player_id, tx_to, valid_from),
+    INDEX ix_contract_club_asof (club_id, tx_to, valid_from)
 );
 
 -- Head coach of a club (the role).
