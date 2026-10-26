@@ -1,5 +1,5 @@
--- 01_schema.sql
--- Football league with two clocks. MariaDB 11.x.
+-- 01_schema.sql: football league with two clocks (MariaDB 11.8)
+-- drops and recreates the db, safe to rerun
 
 DROP DATABASE IF EXISTS football_bt;
 
@@ -10,44 +10,39 @@ CREATE DATABASE football_bt
 USE football_bt;
 
 SET time_zone = '+00:00';
--- store all times as UTC
+-- all times in UTC
 
 
--- =====================================================================
--- Non-temporal helper tables
--- =====================================================================
+-- ---------- helper tables (no history) ----------
 
--- Log of changes, one row per change.
--- All rows written by one change share its tx_id and tx_time.
--- No history needed: this table is the history of writes, rows are only added.
+-- one row per change, all rows of a change share tx_id and tx_time
+-- only ever inserted into, so it's already a history
 CREATE TABLE tx_registry
 (
     tx_id   BIGINT       NOT NULL AUTO_INCREMENT,
-    tx_time DATETIME(6)  NOT NULL, -- taken from @sim_now
+    tx_time DATETIME(6)  NOT NULL, -- from @sim_now
     author  VARCHAR(100) NOT NULL,
-    reason  VARCHAR(500) NOT NULL, -- starts with the story label, e.g. 'S5 | E3 ...'
+    reason  VARCHAR(500) NOT NULL, -- starts with the label, e.g. 'S5 | E3 ...'
     PRIMARY KEY (tx_id)
 );
 
--- Named date ranges: season halves and transfer windows (used by Q4).
--- No history needed: the league calendar is fixed and never revised.
+-- named periods for Q4 (season halves, transfer windows)
+-- the calendar never changes, so no history
 CREATE TABLE season_period
 (
     period_id  INT         NOT NULL AUTO_INCREMENT,
     name       VARCHAR(50) NOT NULL,
     start_date DATE        NOT NULL, -- included
-    end_date   DATE        NOT NULL, -- not included
+    end_date   DATE        NOT NULL, -- excluded
     PRIMARY KEY (period_id),
     UNIQUE (name),
     CHECK (start_date < end_date)
 );
 
 
--- =====================================================================
--- Anchor tables (non-temporal)
--- Only ids and facts that never change. Every foreign key points here,
--- because a history table has many rows per entity and cannot be a target.
--- =====================================================================
+-- ---------- anchors (no history) ----------
+-- ids + facts that never change. FKs point here, since a version
+-- table has many rows per entity and can't be an FK target.
 
 CREATE TABLE club
 (
@@ -75,14 +70,11 @@ CREATE TABLE coach
 );
 
 
--- =====================================================================
--- History tables (bitemporal)
--- One row = one fact + when it was true + when it was believed.
--- =====================================================================
+-- ---------- version tables (bitemporal) ----------
+-- one row = a fact + when it was true + when the db believed it
 
--- Club name and budget over time.
--- budget_eur is the number that changes. The club's valid periods are
--- also the limit for its contracts and coaches (invariant I2).
+-- club name and budget. its valid periods also bound
+-- the club's contracts and coaches (I2)
 CREATE TABLE club_version
 (
     version_id BIGINT         NOT NULL AUTO_INCREMENT,
@@ -102,17 +94,16 @@ CREATE TABLE club_version
     CHECK (tx_from < tx_to)
 );
 
--- A player plays for a club (the relationship). Largest table.
--- Key: (player_id, club_id), so the same pair can stop and start again.
--- A loan is a LOAN row at the borrowing club; the PERMANENT row at the
--- home club keeps running at the same time.
+-- player at a club (relationship), the biggest table
+-- key (player_id, club_id), so a player can leave and come back.
+-- a loan is a LOAN row at the new club, the PERMANENT one keeps running
 CREATE TABLE contract_version
 (
     version_id    BIGINT                     NOT NULL AUTO_INCREMENT,
     player_id     INT                        NOT NULL,
     club_id       INT                        NOT NULL,
     contract_type ENUM ('PERMANENT', 'LOAN') NOT NULL,
-    salary_eur    DECIMAL(12, 2)             NOT NULL, -- per year
+    salary_eur    DECIMAL(12, 2)             NOT NULL, -- yearly
     valid_from    DATE                       NOT NULL,
     valid_to      DATE                       NOT NULL DEFAULT '9999-12-31',
     tx_from       DATETIME(6)                NOT NULL,
@@ -125,13 +116,13 @@ CREATE TABLE contract_version
     CHECK (salary_eur > 0),
     CHECK (valid_from < valid_to),
     CHECK (tx_from < tx_to),
-    -- As-of indexes: jump to one player (Q1) or one club (Q6),
+    -- as-of indexes: by player (Q1) and by club (Q6)
     INDEX ix_contract_asof (player_id, tx_to, valid_from),
     INDEX ix_contract_club_asof (club_id, tx_to, valid_from)
 );
 
--- Head coach of a club (the role).
--- Key: club_id. A club has at most one head coach at a time (invariant I3).
+-- head coach of a club (role), key club_id
+-- at most one coach per club at a time (I3)
 CREATE TABLE head_coach_version
 (
     version_id BIGINT      NOT NULL AUTO_INCREMENT,
@@ -148,6 +139,6 @@ CREATE TABLE head_coach_version
     FOREIGN KEY (tx_id) REFERENCES tx_registry (tx_id),
     CHECK (valid_from < valid_to),
     CHECK (tx_from < tx_to),
-    -- As-of index: jump to one club, then filter by tx_to, then valid_from.
+    -- as-of index: club, then tx_to, then valid_from
     INDEX ix_coach_asof (club_id, tx_to, valid_from)
 );

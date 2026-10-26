@@ -1,30 +1,20 @@
 -- 04_views.sql
--- One view per question, Q0-Q8.
--- Run after 01, 02 and 03.
---
--- Views cannot take parameters, so they read their inputs from the
--- one-row table query_params. 05_tests.sql sets the values, then
--- reads the views.
--- Views cannot use @variables, so the open-end values are written out.
+-- Q0-Q8 views; run after 01, 02 and 03.
 
 USE football_bt;
 SET time_zone = '+00:00';
 
 
--- =====================================================================
--- query_params: the inputs for every view.
--- No history needed: it is a helper, not data about the league.
--- The PRIMARY KEY plus CHECK (id = 1) allow only one row.
--- =====================================================================
+-- query_params: shared inputs for all views.
 DROP TABLE IF EXISTS query_params;
 
 CREATE TABLE query_params (
                               id            TINYINT      NOT NULL DEFAULT 1,
-                              valid_at      DATE         NOT NULL,   -- "true on ..."            (Q6)
-                              known_at      DATETIME(6)  NOT NULL,   -- "as the database knew at" (Q5, Q6)
-                              period_start  DATE         NOT NULL,   -- included                 (Q4)
-                              period_end    DATE         NOT NULL,   -- not included             (Q4)
-                              subject_id    INT          NOT NULL,   -- player_id (Q1) or club_id (Q2, Q6)
+                              valid_at      DATE         NOT NULL,
+                              known_at      DATETIME(6)  NOT NULL,
+                              period_start  DATE         NOT NULL,
+                              period_end    DATE         NOT NULL,
+                              subject_id    INT          NOT NULL,
                               PRIMARY KEY (id),
                               CHECK (id = 1),
                               CHECK (period_start < period_end)
@@ -34,11 +24,7 @@ INSERT INTO query_params (id, valid_at, known_at, period_start, period_end, subj
 VALUES (1, '2026-03-04', '2026-03-10 00:00:00', '2025-07-01', '2026-01-01', 1);
 
 
--- =====================================================================
--- Q0 | Rows that break invariant I1, I2 or I3.
--- Only rows still believed (tx_to open) are checked.
--- Must return zero rows on the final data.
--- =====================================================================
+-- Q0: integrity violations.
 CREATE OR REPLACE VIEW v_integrity_violations AS
 
 -- I1: two current contracts of the same player at the same club overlap.
@@ -49,8 +35,8 @@ FROM contract_version AS a
          JOIN contract_version AS b
               ON  b.player_id  = a.player_id
                   AND b.club_id    = a.club_id
-                  AND b.version_id > a.version_id                  -- each pair once
-                  AND a.valid_from < b.valid_to                    -- overlap
+                  AND b.version_id > a.version_id
+                  AND a.valid_from < b.valid_to
                   AND b.valid_from < a.valid_to
 WHERE a.tx_to = '9999-12-31 23:59:59.999999'
   AND b.tx_to = '9999-12-31 23:59:59.999999'
@@ -110,12 +96,12 @@ SELECT 'I2', 'contract_version', c.version_id, NULL,
 FROM contract_version AS c
 WHERE c.tx_to = '9999-12-31 23:59:59.999999'
   AND (
-    NOT EXISTS (                                  -- (1) first day not covered
+    NOT EXISTS (
         SELECT 1 FROM club_version AS p
         WHERE p.club_id = c.club_id
           AND p.tx_to   = '9999-12-31 23:59:59.999999'
           AND p.valid_from <= c.valid_from AND c.valid_from < p.valid_to)
-        OR EXISTS (                                      -- (2) a hole inside the contract
+        OR EXISTS (
         SELECT 1 FROM club_version AS p
         WHERE p.club_id = c.club_id
           AND p.tx_to   = '9999-12-31 23:59:59.999999'
@@ -153,11 +139,7 @@ WHERE h.tx_to = '9999-12-31 23:59:59.999999'
     );
 
 
--- =====================================================================
--- Q1 | Current contracts of one player.
--- Both clocks, "now": valid today and still believed.
--- Input: subject_id = player_id
--- =====================================================================
+-- Q1: current contracts for one player.
 CREATE OR REPLACE VIEW v_q1_player_contracts_now AS
 SELECT
     p.player_id,
@@ -169,24 +151,15 @@ SELECT
     cv.valid_from,
     cv.valid_to
 FROM contract_version AS cv
-         JOIN query_params     AS qp ON cv.player_id = qp.subject_id      -- the chosen player
+         JOIN query_params     AS qp ON cv.player_id = qp.subject_id
          JOIN player           AS p  ON p.player_id  = cv.player_id
          JOIN club             AS c  ON c.club_id    = cv.club_id
-WHERE cv.valid_from <= CURDATE()                                  -- valid today
+WHERE cv.valid_from <= CURDATE()
   AND CURDATE()     <  cv.valid_to
-  AND cv.tx_to       = '9999-12-31 23:59:59.999999';              -- still believed
+  AND cv.tx_to       = '9999-12-31 23:59:59.999999';
 
 
--- =====================================================================
--- Q2 | Head coaches of one club, as known today, one row per tenure.
--- Valid time. Rows next to each other with the same coach are merged
--- ("gaps and islands"):
---   1. mark a row as a new tenure unless it continues the row before
---      (same coach, starts the day the previous one ended)
---   2. a running sum of those marks numbers the tenures
---   3. group by that number
--- Input: subject_id = club_id
--- =====================================================================
+-- Q2: head coach history for one club.
 CREATE OR REPLACE VIEW v_q2_head_coach_history AS
 WITH cur AS (
     SELECT
@@ -198,7 +171,7 @@ WITH cur AS (
             END AS is_new_tenure
     FROM head_coach_version AS hc
              JOIN query_params       AS qp ON hc.club_id = qp.subject_id
-    WHERE hc.tx_to = '9999-12-31 23:59:59.999999'                   -- as known today
+    WHERE hc.tx_to = '9999-12-31 23:59:59.999999'
 ),
      numbered AS (
          SELECT cur.*,
@@ -213,7 +186,6 @@ SELECT
     MIN(n.valid_from)                    AS tenure_start,
     MAX(n.valid_to)                      AS tenure_end,
     COUNT(*)                             AS rows_merged,
-    -- ongoing tenures are measured up to today
     DATEDIFF(LEAST(MAX(n.valid_to), CURDATE()), MIN(n.valid_from)) AS tenure_days,
     CASE WHEN MAX(n.valid_to) = '9999-12-31' THEN 'yes' ELSE 'no' END AS still_in_charge
 FROM numbered AS n
@@ -222,24 +194,9 @@ FROM numbered AS n
 GROUP BY n.club_id, n.tenure_no, n.coach_id, cl.short_code, co.first_name, co.last_name;
 
 
--- =====================================================================
--- Q3 | Late entries (E3), proactive entries (E2) and corrections (E4),
--- with the delay in days and the old and new belief side by side.
--- Transaction time vs valid time.
---
--- A change re-writes unchanged history too, so single rows cannot be
--- judged alone. For every change and every key it touched we compare
--- the old belief (rows it closed) with the new belief (rows it wrote),
--- and find the first valid date where they differ: the change date.
---   no new rows                      -> RETRACTION (E8)
---   an old row starts on that date   -> CORRECTION (E4): a stated fact was wrong
---   change date after recording day  -> PROACTIVE  (E2)
---   recorded 7 or more days later    -> LATE       (E3)
---   anything else                    -> on time, not listed
--- =====================================================================
+-- Q3: late/proactive/corrected entries by transaction.
 CREATE OR REPLACE VIEW v_q3_late_proactive_corrections AS
 WITH
--- All three history tables in one shape: table, key, text value, periods.
 v AS (
     SELECT 'contract' AS tbl, cv.player_id AS k1, cv.club_id AS k2,
            CONCAT(p.first_name, ' ', p.last_name, ' at ', c.short_code) AS subject,
@@ -264,13 +221,11 @@ v AS (
     FROM club_version AS cl
              JOIN club AS c ON c.club_id = cl.club_id
 ),
--- One row per (change, key it touched).
 touched AS (
     SELECT DISTINCT t.tx_id, t.tx_time, t.reason, v.tbl, v.k1, v.k2, v.subject
     FROM tx_registry AS t
              JOIN v ON v.tx_from = t.tx_time OR v.tx_to = t.tx_time
 ),
--- Dates where the old or new belief can switch value.
 pts AS (
     SELECT tc.tx_id, tc.tx_time, tc.tbl, tc.k1, tc.k2, v.valid_from AS d
     FROM touched AS tc
@@ -283,22 +238,20 @@ pts AS (
         AND (v.tx_from = tc.tx_time OR v.tx_to = tc.tx_time)
     WHERE v.valid_to < '9999-12-31'
 ),
--- Old and new value at each of those dates.
 cmp AS (
     SELECT pts.*,
            (SELECT o.val FROM v AS o
             WHERE o.tbl = pts.tbl AND o.k1 = pts.k1 AND o.k2 = pts.k2
-              AND o.tx_to = pts.tx_time                              -- closed by this change
+              AND o.tx_to = pts.tx_time
               AND o.valid_from <= pts.d AND pts.d < o.valid_to
             LIMIT 1) AS old_val,
            (SELECT n.val FROM v AS n
             WHERE n.tbl = pts.tbl AND n.k1 = pts.k1 AND n.k2 = pts.k2
-              AND n.tx_from = pts.tx_time                            -- written by this change
+              AND n.tx_from = pts.tx_time
               AND n.valid_from <= pts.d AND pts.d < n.valid_to
             LIMIT 1) AS new_val
     FROM pts
 ),
--- First date where they differ.
 chg AS (
     SELECT tx_id, tbl, k1, k2, MIN(d) AS change_date
     FROM cmp
@@ -347,15 +300,7 @@ FROM classified
 WHERE classification <> 'ON TIME';
 
 
--- =====================================================================
--- Q4 | Contracts valid during a named period, as known today.
--- Valid time. Two answers per contract:
---   at_some_point  overlap      from < period_end AND period_start < to
---   throughout     containment  from <= period_start AND period_end <= to
--- Rows next to each other for the same player, club and type are merged
--- first, so a mid-season raise does not break "throughout".
--- Input: period_start, period_end
--- =====================================================================
+-- Q4: contracts active in a named period.
 CREATE OR REPLACE VIEW v_q4_contracts_in_period AS
 WITH cur AS (
     SELECT
@@ -397,15 +342,11 @@ FROM spells       AS s
          CROSS JOIN query_params AS qp
          JOIN player       AS p ON p.player_id = s.player_id
          JOIN club         AS c ON c.club_id   = s.club_id
-WHERE s.spell_from  < qp.period_end                               -- overlap
+WHERE s.spell_from  < qp.period_end
   AND qp.period_start < s.spell_to;
 
 
--- =====================================================================
--- Q5 | All contracts as the database believed them at known_at.
--- Transaction time only: any valid time, past, present or future.
--- Input: known_at
--- =====================================================================
+-- Q5: contracts as believed at known_at.
 CREATE OR REPLACE VIEW v_q5_contracts_believed_at AS
 SELECT
     qp.known_at,
@@ -420,20 +361,13 @@ SELECT
     cv.tx_from,
     cv.tx_to
 FROM contract_version AS cv
-         JOIN query_params     AS qp ON cv.tx_from <= qp.known_at       -- already written
-    AND qp.known_at < cv.tx_to          -- not yet replaced
+         JOIN query_params     AS qp ON cv.tx_from <= qp.known_at
+    AND qp.known_at < cv.tx_to
          JOIN player           AS p  ON p.player_id = cv.player_id
          JOIN club             AS c  ON c.club_id   = cv.club_id;
 
 
--- =====================================================================
--- Q6 | One club at one moment: who was head coach and who was in the
--- squad on valid_at, as the database knew it at known_at.
--- Both clocks: the core predicate from the assignment, on two tables.
--- Changing only known_at gives the three answers for HAR on 4 March.
--- Uses ix_coach_asof and ix_contract_club_asof (club_id, tx_to, valid_from).
--- Input: subject_id = club_id, valid_at, known_at
--- =====================================================================
+-- Q6: club state as of a date and point in time.
 CREATE OR REPLACE VIEW v_q6_club_as_of AS
 SELECT
     'HEAD COACH'                              AS fact,
@@ -446,8 +380,8 @@ FROM head_coach_version AS hc
          JOIN coach AS co ON co.coach_id = hc.coach_id
          JOIN club  AS c  ON c.club_id   = hc.club_id
 WHERE hc.club_id    = qp.subject_id
-  AND hc.valid_from <= qp.valid_at AND qp.valid_at < hc.valid_to    -- true then
-  AND hc.tx_from    <= qp.known_at AND qp.known_at < hc.tx_to       -- known then
+  AND hc.valid_from <= qp.valid_at AND qp.valid_at < hc.valid_to
+  AND hc.tx_from    <= qp.known_at AND qp.known_at < hc.tx_to
 
 UNION ALL
 
@@ -466,12 +400,7 @@ WHERE cv.club_id    = qp.subject_id
   AND cv.tx_from    <= qp.known_at AND qp.known_at < cv.tx_to;
 
 
--- =====================================================================
--- Q7 | Contracts active per club per month, as known today.
--- Valid time. A recursive CTE builds the 12 months of the season;
--- every club gets every month (LEFT JOIN), so empty months show 0.
--- "Active in a month" = the contract overlaps the month.
--- =====================================================================
+-- Q7: monthly active players by club.
 CREATE OR REPLACE VIEW v_q7_monthly_active AS
 WITH RECURSIVE months AS (
     SELECT MIN(start_date) AS month_start,
@@ -493,17 +422,12 @@ FROM months AS m
          LEFT JOIN contract_version AS cv
                    ON  cv.club_id = c.club_id
                        AND cv.tx_to   = '9999-12-31 23:59:59.999999'
-                       AND cv.valid_from < m.month_start + INTERVAL 1 MONTH          -- overlaps the month
+                       AND cv.valid_from < m.month_start + INTERVAL 1 MONTH
                        AND m.month_start < cv.valid_to
 GROUP BY m.month_start, c.club_id, c.short_code;
 
 
--- =====================================================================
--- Q8 | Gaps between two periods of the same player at the same club
--- (left, then came back), as known today.
--- Valid time. LAG gives the end of the previous period;
--- gap = this start - previous end. Only real gaps (> 0 days) are shown.
--- =====================================================================
+-- Q8: gaps between player spells at the same club.
 CREATE OR REPLACE VIEW v_q8_rejoin_gaps AS
 WITH ordered AS (
     SELECT

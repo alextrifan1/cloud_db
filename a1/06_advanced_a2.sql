@@ -1,19 +1,6 @@
--- 06_advanced_a2.sql
--- A2: Q1, Q5 and Q6 again, with MariaDB's own temporal features,
--- and proof that they return the same rows as the core views.
--- Run after 01-05 (06_advanced_a1.sql may run before or not at all).
---
--- Native tables:
---   valid time        PERIOD FOR valid_period (valid_from, valid_to)
---                     + key ... WITHOUT OVERLAPS
---   transaction time  WITH SYSTEM VERSIONING: MariaDB stamps row_start
---                     and row_end itself and keeps old rows as history.
---                     Queried with FOR SYSTEM_TIME AS OF.
---
--- Loading the history: MariaDB normally stamps transaction time with the
--- real clock, so a 2025 timeline would get today's date. The session
--- setting system_versioning_insert_history = ON lets us write row_start
--- and row_end ourselves, copied from tx_from and tx_to.
+-- 06_advanced_a2.sql: A2, Q1/Q5/Q6 with MariaDB's own temporal features
+-- valid time: PERIOD FOR + WITHOUT OVERLAPS, tx time: SYSTEM VERSIONING
+-- every result is compared with the core views. run after 01-05 (A1 optional).
 
 USE football_bt;
 SET time_zone = '+00:00';
@@ -24,13 +11,9 @@ DROP PROCEDURE IF EXISTS sp_a2_compare;
 DROP PROCEDURE IF EXISTS sp_a2_try;
 
 
--- =====================================================================
--- Part 1. Native tables
--- =====================================================================
+-- ---------- native tables ----------
 
--- Contracts. The key (player, club, valid_period WITHOUT OVERLAPS)
--- is invariant I1, enforced by the engine on current rows.
--- No tx_id column: the engine does not link rows to tx_registry.
+-- key WITHOUT OVERLAPS = I1 checked by the engine (no tx_id here)
 CREATE TABLE contract_native (
                                  player_id      INT            NOT NULL,
                                  club_id        INT            NOT NULL,
@@ -47,8 +30,7 @@ CREATE TABLE contract_native (
                                  FOREIGN KEY (club_id)   REFERENCES club (club_id)
 ) WITH SYSTEM VERSIONING;
 
--- Head coaches. The key (club, valid_period WITHOUT OVERLAPS) is
--- invariant I3: one head coach per club at any moment.
+-- key WITHOUT OVERLAPS = I3, one coach per club at a time
 CREATE TABLE head_coach_native (
                                    club_id     INT           NOT NULL,
                                    coach_id    INT           NOT NULL,
@@ -64,12 +46,10 @@ CREATE TABLE head_coach_native (
 ) WITH SYSTEM VERSIONING;
 
 
--- =====================================================================
--- Part 2. Load the full history from the core tables.
--- Closed rows keep both times (row_start = tx_from, row_end = tx_to).
--- Current rows get only row_start; the engine fills row_end with its own
--- "still current" value, the end of the TIMESTAMP range.
--- =====================================================================
+-- ---------- load the history ----------
+-- normally MariaDB stamps tx time with the real clock; insert_history
+-- lets us copy tx_from/tx_to into row_start/row_end instead.
+-- closed rows get both, current rows only row_start.
 SET @@system_versioning_insert_history = ON;
 
 INSERT INTO contract_native
@@ -96,10 +76,10 @@ SELECT club_id, coach_id, valid_from, valid_to, tx_from
 FROM   head_coach_version
 WHERE  tx_to = '9999-12-31 23:59:59.999999';
 
--- Back to normal: from now on only the engine stamps time.
+-- back to normal
 SET @@system_versioning_insert_history = OFF;
 
--- Same number of rows as the core tables, in total and current.
+-- row counts, native vs core (all and current)
 SELECT 'contracts'   AS rows_of,
        (SELECT COUNT(*) FROM contract_version)                                           AS core_all,
        (SELECT COUNT(*) FROM contract_native FOR SYSTEM_TIME ALL)                        AS native_all,
@@ -113,14 +93,9 @@ SELECT 'head coaches',
        (SELECT COUNT(*) FROM head_coach_native);
 
 
--- =====================================================================
--- Part 3. Compare helper.
--- Each test fills two temporary tables with the same columns:
---   a2_core    rows from the core view
---   a2_native  rows from the native query
--- and sp_a2_compare shows both counts and the rows found in only one.
--- Expect verdict = SAME for every test.
--- =====================================================================
+-- ---------- compare helper ----------
+-- each test fills a2_core (core view) and a2_native (native query),
+-- then sp_a2_compare prints SAME or DIFFERENT
 DROP TEMPORARY TABLE IF EXISTS a2_core;
 DROP TEMPORARY TABLE IF EXISTS a2_native;
 CREATE TEMPORARY TABLE a2_core (
@@ -144,20 +119,17 @@ BEGIN
            IF(@core_rows = @native_rows AND @only_core = 0 AND @only_native = 0,
               'SAME', 'DIFFERENT') AS verdict;
 
-    DELETE FROM a2_core;
-    DELETE FROM a2_native;
+    DELETE FROM a2_core   WHERE 1 = 1;
+    DELETE FROM a2_native WHERE 1 = 1;
 END//
 DELIMITER ;
 
 
--- =====================================================================
--- Part 4. Q1 natively: current contracts of one player.
--- Transaction time: FOR SYSTEM_TIME AS OF now (the current rows).
--- Valid time: MariaDB has no AS OF for application periods in SELECT,
--- so it stays a predicate on the period's columns.
--- =====================================================================
+-- ---------- Q1 native ----------
+-- tx time with FOR SYSTEM_TIME, valid time stays in the WHERE
+-- (MariaDB has no AS OF for valid time in SELECT)
+-- same players as in 05: Moreau, Hughes, Rossi, Ward
 
--- Q1 for Moreau (13), Hughes (12), Rossi (56) and Ward (68), as in 05.
 UPDATE query_params SET subject_id = 13 WHERE id = 1;
 INSERT INTO a2_core
 SELECT 'CONTRACT', CONCAT(first_name, ' ', last_name), club,
@@ -219,12 +191,9 @@ WHERE n.player_id = 68
 CALL sp_a2_compare('Q1 Ward (68), no contract');
 
 
--- =====================================================================
--- Part 5. Q5 natively: all contracts as believed at known_at.
--- Only transaction time: FOR SYSTEM_TIME AS OF, no valid-time filter.
--- =====================================================================
+-- ---------- Q5 native (tx time only) ----------
 
--- Go-live afternoon (66 rows).
+-- go-live, 66 rows
 UPDATE query_params SET known_at = '2025-07-01 12:00:00' WHERE id = 1;
 SET @known_at = (SELECT known_at FROM query_params WHERE id = 1);
 INSERT INTO a2_core
@@ -239,7 +208,7 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
          JOIN club   AS c ON c.club_id   = n.club_id;
 CALL sp_a2_compare('Q5 at 2025-07-01 12:00');
 
--- 15 Sep noon: the wrong Rossi loan is believed (70 rows).
+-- 15 sep 12:00, wrong Rossi loan still believed, 70 rows
 UPDATE query_params SET known_at = '2025-09-15 12:00:00' WHERE id = 1;
 SET @known_at = (SELECT known_at FROM query_params WHERE id = 1);
 INSERT INTO a2_core
@@ -254,7 +223,7 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
          JOIN club   AS c ON c.club_id   = n.club_id;
 CALL sp_a2_compare('Q5 at 2025-09-15 12:00 (wrong loan believed)');
 
--- 15 Sep 17:00: after the retraction (69 rows).
+-- 15 sep 17:00, after the retraction, 69 rows
 UPDATE query_params SET known_at = '2025-09-15 17:00:00' WHERE id = 1;
 SET @known_at = (SELECT known_at FROM query_params WHERE id = 1);
 INSERT INTO a2_core
@@ -269,7 +238,7 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
          JOIN club   AS c ON c.club_id   = n.club_id;
 CALL sp_a2_compare('Q5 at 2025-09-15 17:00 (after retraction)');
 
--- 20 March 2026, between the late entry and the correction.
+-- 20 mar 2026, between S19 and S20
 UPDATE query_params SET known_at = '2026-03-20 00:00:00' WHERE id = 1;
 SET @known_at = (SELECT known_at FROM query_params WHERE id = 1);
 INSERT INTO a2_core
@@ -285,18 +254,12 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
 CALL sp_a2_compare('Q5 at 2026-03-20');
 
 
--- =====================================================================
--- Part 6. Q6 natively: HAR's head coach and squad on 4 March 2026,
--- as known at three moments. Both clocks:
---   transaction time  FOR SYSTEM_TIME AS OF
---   valid time        predicate on the period's columns
--- "Today" is FOR SYSTEM_TIME AS OF CURRENT_TIMESTAMP(6) natively;
--- the core view uses known_at = 9999-12-31 for the same meaning.
--- =====================================================================
+-- ---------- Q6 native: HAR on 4 mar 2026 ----------
+-- "today" is AS OF CURRENT_TIMESTAMP(6) here, known_at = 9999-12-31 in the core view
 
--- The three answers, side by side. Expect Romano / Kelly / Romano.
 SET @club = 3, @valid_at = '2026-03-04';
 
+-- three answers: Romano / Kelly / Romano
 SELECT '2026-03-10' AS known_at, CONCAT(co.first_name, ' ', co.last_name) AS head_coach
 FROM head_coach_native FOR SYSTEM_TIME AS OF TIMESTAMP '2026-03-10 00:00:00' AS h
          JOIN coach AS co ON co.coach_id = h.coach_id
@@ -312,8 +275,8 @@ FROM head_coach_native FOR SYSTEM_TIME AS OF CURRENT_TIMESTAMP(6) AS h
          JOIN coach AS co ON co.coach_id = h.coach_id
 WHERE h.club_id = @club AND h.valid_from <= @valid_at AND @valid_at < h.valid_to;
 
--- Full Q6 (coach + squad) compared with the core view, at each moment.
--- 10 March
+-- full Q6 (coach + squad) vs the core view
+-- known 10 mar
 UPDATE query_params
 SET subject_id = 3, valid_at = '2026-03-04', known_at = '2026-03-10 00:00:00'
 WHERE id = 1;
@@ -336,7 +299,7 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
 WHERE n.club_id = @club AND n.valid_from <= @valid_at AND @valid_at < n.valid_to;
 CALL sp_a2_compare('Q6 HAR on 2026-03-04, known 2026-03-10');
 
--- 20 March
+-- known 20 mar
 UPDATE query_params SET known_at = '2026-03-20 00:00:00' WHERE id = 1;
 SET @known_at = (SELECT known_at FROM query_params WHERE id = 1);
 INSERT INTO a2_core
@@ -357,7 +320,7 @@ FROM contract_native FOR SYSTEM_TIME AS OF TIMESTAMP @known_at AS n
 WHERE n.club_id = @club AND n.valid_from <= @valid_at AND @valid_at < n.valid_to;
 CALL sp_a2_compare('Q6 HAR on 2026-03-04, known 2026-03-20');
 
--- Today
+-- known today
 UPDATE query_params SET known_at = '9999-12-31 00:00:00' WHERE id = 1;
 INSERT INTO a2_core
 SELECT fact, person, club, details, valid_from, valid_to FROM v_q6_club_as_of;
@@ -378,11 +341,9 @@ WHERE n.club_id = @club AND n.valid_from <= @valid_at AND @valid_at < n.valid_to
 CALL sp_a2_compare('Q6 HAR on 2026-03-04, known today');
 
 
--- =====================================================================
--- Part 7. What the engine does that the core design does by hand.
--- Everything here is rolled back, so the comparisons above still hold.
--- =====================================================================
+-- ---------- what the engine does for us (all rolled back) ----------
 
+-- helper: runs a statement, shows the error, rolls back
 DELIMITER //
 CREATE PROCEDURE sp_a2_try(IN p_attempt VARCHAR(200), IN p_sql TEXT)
 BEGIN
@@ -401,17 +362,15 @@ BEGIN
 END//
 DELIMITER ;
 
--- 7a. WITHOUT OVERLAPS enforces I1 and I3. Expect both 'blocked'.
+-- WITHOUT OVERLAPS blocks I1 and I3 violations, both should say blocked
 CALL sp_a2_try('I1 native: second NOR contract for Walsh overlapping his current one',
                'INSERT INTO contract_native (player_id, club_id, contract_type, salary_eur, valid_from, valid_to) VALUES (1, 1, ''PERMANENT'', 1000, ''2026-02-01'', ''2026-03-01'')');
 
 CALL sp_a2_try('I3 native: a second head coach for HAR at the same time',
                'INSERT INTO head_coach_native (club_id, coach_id, valid_from, valid_to) VALUES (3, 7, ''2026-05-01'', ''9999-12-31'')');
 
--- 7b. UPDATE ... FOR PORTION OF splits the valid period by itself, and
--- system versioning keeps the old row as history by itself. This is
--- the close + insert our scripts and procedures do by hand.
--- Walsh (1) gets 1,200,000 only from 1 Sep to 31 Dec 2026.
+-- FOR PORTION OF splits the row by itself and versioning keeps the old one,
+-- i.e. the close + insert we do by hand. Walsh 1.2M only sep-dec 2026.
 START TRANSACTION;
 
 UPDATE contract_native
@@ -419,8 +378,7 @@ UPDATE contract_native
 SET   salary_eur = 1200000.00
 WHERE player_id = 1 AND club_id = 1;
 
--- Expect: current rows split into before / during / after the portion;
--- the replaced row is still there with row_end = the moment of the UPDATE.
+-- Walsh: split in 3 + the replaced row kept as history
 SELECT player_id, club_id, salary_eur, valid_from, valid_to, row_start, row_end,
        IF(row_end > CURRENT_TIMESTAMP(6), 'current', 'history') AS state
 FROM contract_native FOR SYSTEM_TIME ALL

@@ -1,6 +1,5 @@
--- 02_data.sql
--- S1 | E1: initial load, the day the system goes live.
--- Every history row is valid from go-live day, 2025-07-01.
+-- 02_data.sql: S1 | E1, initial load on go-live day
+-- every version row is valid from 2025-07-01
 
 USE football_bt;
 SET time_zone = '+00:00';
@@ -8,20 +7,18 @@ SET time_zone = '+00:00';
 START TRANSACTION;
 
 
--- Simulated clock: "now" is go-live morning.
--- Every tx_from below uses this value.
+-- simulated clock, go-live morning (used as tx_from below)
 SET @sim_now = '2025-07-01 09:00:00';
 
 
--- Register the change and keep its id for all rows below.
--- LAST_INSERT_ID() gives the id just created (1 here).
+-- log the change, keep its id (1) for every row below
 INSERT INTO tx_registry (tx_time, author, reason)
 VALUES (@sim_now, 'system', 'S1 | E1 initial load: go-live of the league database');
 
 SET @tx_id = LAST_INSERT_ID();
 
 
--- Named periods. end_date is the first day after the period.
+-- named periods, end_date = first day after
 INSERT INTO season_period (period_id, name, start_date, end_date)
 VALUES (1, '2025/26 Autumn', '2025-07-01', '2026-01-01'),
        (2, '2025/26 Spring', '2026-01-01', '2026-07-01'),
@@ -29,9 +26,8 @@ VALUES (1, '2025/26 Autumn', '2025-07-01', '2026-01-01'),
        (4, 'Winter window 2026', '2026-01-05', '2026-02-02');
 
 
--- =====================================================================
--- Anchors. Ids are fixed by hand so 03_timeline.sql can use them.
--- =====================================================================
+-- ---------- anchors ----------
+-- ids set by hand so 03 can use them
 
 INSERT INTO club (club_id, short_code)
 VALUES (1, 'NOR'),
@@ -41,7 +37,7 @@ VALUES (1, 'NOR'),
        (5, 'WES'),
        (6, 'SOU');
 
--- Coaches 1-6 start as head coaches. 7 and 8 come in later.
+-- 1-6 start as head coaches, 7 and 8 come later
 INSERT INTO coach (coach_id, first_name, last_name)
 VALUES (1, 'Mark', 'Turner'),
        (2, 'Paul', 'Weber'),
@@ -52,8 +48,7 @@ VALUES (1, 'Mark', 'Turner'),
        (7, 'Erik', 'Larsen'),
        (8, 'Sam', 'Kelly');
 
--- 11 players per club, in club order (1-11 NOR, 12-22 RIV, ...).
--- 67-70 have no club at go-live.
+-- 11 per club in order (1-11 NOR, 12-22 RIV, ...), 67-70 free agents
 INSERT INTO player (player_id, first_name, last_name, birth_date)
 VALUES
     -- NOR
@@ -135,13 +130,10 @@ VALUES
     (70, 'Oscar', 'Lindqvist', '1999-04-07');
 
 
--- =====================================================================
--- History rows.
--- valid_to and tx_to are left out, so the defaults fill in the open
--- end: true until further notice, believed until further notice.
--- =====================================================================
+-- ---------- version rows ----------
+-- valid_to and tx_to left out, defaults make them open-ended
 
--- Club names and autumn budgets.
+-- names and autumn budgets
 INSERT INTO club_version (club_id, name, budget_eur, valid_from, tx_from, tx_id)
 VALUES (1, 'Northside FC', 12000000.00, '2025-07-01', @sim_now, @tx_id),
        (2, 'Riverside United', 9500000.00, '2025-07-01', @sim_now, @tx_id),
@@ -150,7 +142,7 @@ VALUES (1, 'Northside FC', 12000000.00, '2025-07-01', @sim_now, @tx_id),
        (5, 'Westbrook Athletic', 6500000.00, '2025-07-01', @sim_now, @tx_id),
        (6, 'Southport Town', 5800000.00, '2025-07-01', @sim_now, @tx_id);
 
--- Coach N heads club N.
+-- coach N heads club N
 INSERT INTO head_coach_version (club_id, coach_id, valid_from, tx_from, tx_id)
 VALUES (1, 1, '2025-07-01', @sim_now, @tx_id),
        (2, 2, '2025-07-01', @sim_now, @tx_id),
@@ -159,7 +151,7 @@ VALUES (1, 1, '2025-07-01', @sim_now, @tx_id),
        (5, 5, '2025-07-01', @sim_now, @tx_id),
        (6, 6, '2025-07-01', @sim_now, @tx_id);
 
--- One permanent contract per player 1-66, salary per year.
+-- one permanent contract each for 1-66, yearly salary
 INSERT INTO contract_version
 (player_id, club_id, contract_type, salary_eur, valid_from, tx_from, tx_id)
 VALUES
@@ -212,7 +204,7 @@ VALUES
     (43, 4, 'PERMANENT', 360000.00, '2025-07-01', @sim_now, @tx_id),
     (44, 4, 'PERMANENT', 190000.00, '2025-07-01', @sim_now, @tx_id),
     -- WES
-    -- 45 (Kowalski): 450,000 is a planted typo. S9 corrects it to 540,000.
+    -- 45 Kowalski: 450k is a planted typo, S9 fixes it to 540k
     (45, 5, 'PERMANENT', 450000.00, '2025-07-01', @sim_now, @tx_id),
     (46, 5, 'PERMANENT', 340000.00, '2025-07-01', @sim_now, @tx_id),
     (47, 5, 'PERMANENT', 290000.00, '2025-07-01', @sim_now, @tx_id),
